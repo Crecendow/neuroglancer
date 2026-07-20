@@ -66,6 +66,7 @@ export default defineConfig((env, args) => {
       ],
     },
     devServer: {
+      allowedHosts: "all",
       client: {
         overlay: {
           // Prevent intrusive notification spam.
