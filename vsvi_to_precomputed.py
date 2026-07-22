@@ -224,6 +224,7 @@ def process_chunk(args):
     scale_key = shared['scale_key']
     is_em = shared['is_em']
     tile_base = shared['tile_base']
+    force = shared.get('force', False)
 
     ts = tile_size
 
@@ -236,10 +237,18 @@ def process_chunk(args):
     z1 = min(z0 + chunk_sz, dim_z)
 
     if x0 >= dim_x or y0 >= dim_y or z0 >= dim_z:
-        return None
+        return 'skip'
 
     if z0 >= len(section_list):
-        return None
+        return 'skip'
+
+    # Check if this chunk already exists (resume support)
+    chunk_filename = f"{x0}-{x1}_{y0}-{y1}_{z0}-{z1}"
+    chunk_dir = os.path.join(out_dir, scale_key)
+    chunk_path = os.path.join(chunk_dir, chunk_filename)
+
+    if not force and os.path.exists(chunk_path):
+        return 'exists'
 
     # Determine which tiles overlap this chunk in XY (in file-naming convention)
     tile_x0 = x0 // ts + tile_base
@@ -324,11 +333,7 @@ def process_chunk(args):
                     chunk_data[ox0:ox1, oy0:oy1, local_z_offset] = vals
 
     # Write chunk file in unsharded precomputed format
-    # Filename: <x0>-<x1>_<y0>-<y1>_<z0>-<z1>
-    chunk_filename = f"{x0}-{x1}_{y0}-{y1}_{z0}-{z1}"
-    chunk_dir = os.path.join(out_dir, scale_key)
     os.makedirs(chunk_dir, exist_ok=True)
-    chunk_path = os.path.join(chunk_dir, chunk_filename)
 
     # Precomputed format requires fortran (column-major) order
     # Data layout: x fastest, z slowest → transpose from [x, y, z] to [z, y, x]
@@ -336,7 +341,7 @@ def process_chunk(args):
     with open(chunk_path, 'wb') as f:
         f.write(data_f)
 
-    return chunk_filename
+    return 'done'
 
 
 # ============================================================
@@ -344,7 +349,8 @@ def process_chunk(args):
 # ============================================================
 
 def convert_layer(layer_type, layer_dir_name, vsvi_meta, pattern_base,
-                  input_dir, output_dir, chunk_size, num_workers):
+                  input_dir, output_dir, chunk_size, num_workers,
+                  force_overwrite=False):
     """
     Convert one layer (EM_img or seg) from VSVI to precomputed format.
 
@@ -377,6 +383,7 @@ def convert_layer(layer_type, layer_dir_name, vsvi_meta, pattern_base,
     print(f"  Bytes per pixel:    {bpp}")
     print(f"  Chunk size:         {chunk_size[0]} x {chunk_size[1]} x {chunk_size[2]}")
     print(f"  Data type:          {'uint8' if pattern_base == 'em' else 'uint32 (from RGB)'}")
+    print(f"  Mode:               {'force overwrite' if force_overwrite else 'resume (skip existing)'}")
 
     base_path = os.path.join(input_dir, layer_dir_name)
     out_path = os.path.join(output_dir, layer_dir_name)
@@ -488,32 +495,43 @@ def convert_layer(layer_type, layer_dir_name, vsvi_meta, pattern_base,
             'scale_key': str(mip_level),
             'is_em': pattern.startswith('em'),
             'tile_base': 1 if pattern.startswith('em') else 0,
+            'force': force_overwrite,
         })
 
         # Process in parallel
-        completed = 0
+        done = 0
+        skipped = 0
+        exists = 0
         t_start = time.time()
 
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
             futures = {executor.submit(process_chunk, t): t for t in tasks}
             for future in as_completed(futures):
                 try:
-                    future.result()
+                    result = future.result()
+                    if result == 'done':
+                        done += 1
+                    elif result == 'exists':
+                        exists += 1
+                    else:
+                        skipped += 1
                 except Exception as e:
                     print(f"      Error: {e}")
-                completed += 1
-                if completed % 500 == 0 or completed == num_chunks:
+                    skipped += 1
+                total = done + skipped + exists
+                if total % 500 == 0 or total == num_chunks:
                     elapsed = time.time() - t_start
-                    rate = completed / elapsed if elapsed > 0 else 0
-                    eta = (num_chunks - completed) / rate if rate > 0 else 0
-                    print(f"      {completed}/{num_chunks} chunks "
-                          f"({100 * completed / num_chunks:.1f}%), "
+                    rate = total / elapsed if elapsed > 0 else 0
+                    eta = (num_chunks - total) / rate if rate > 0 else 0
+                    print(f"      {total}/{num_chunks} "
+                          f"({done} new, {exists} existing, {skipped} skipped), "
                           f"elapsed: {elapsed / 60:.1f}min, "
                           f"ETA: {eta / 60:.1f}min")
 
         elapsed = time.time() - t_start
+        rate = (done + exists + skipped) / elapsed if elapsed > 0 else 0
         print(f"    Finished in {elapsed / 60:.1f} minutes "
-              f"({completed / elapsed:.1f} chunks/s)")
+              f"(new: {done}, existing: {exists}, skipped: {skipped})")
 
         # Add scale to info
         scales.append({
@@ -563,6 +581,8 @@ def main():
                         help='Chunk edge size in voxels (default: 128)')
     parser.add_argument('--workers', type=int, default=8,
                         help='Number of parallel workers (default: 8)')
+    parser.add_argument('--force', action='store_true',
+                        help='Force overwrite existing chunks (disable resume)')
     parser.add_argument('--only-em', action='store_true',
                         help='Only convert EM_img layer')
     parser.add_argument('--only-seg', action='store_true',
@@ -587,7 +607,8 @@ def main():
         if os.path.exists(em_vsvi):
             em_meta = parse_vsvi(em_vsvi)
             convert_layer('image', 'EM_img', em_meta, 'em',
-                          input_dir, output_dir, chunk_size, num_workers)
+                          input_dir, output_dir, chunk_size, num_workers,
+                          force_overwrite=args.force)
         else:
             print(f"Warning: EM_img VSVI not found at {em_vsvi}")
 
@@ -597,7 +618,8 @@ def main():
         if os.path.exists(seg_vsvi):
             seg_meta = parse_vsvi(seg_vsvi)
             convert_layer('segmentation', 'seg', seg_meta, 'seg',
-                          input_dir, output_dir, chunk_size, num_workers)
+                          input_dir, output_dir, chunk_size, num_workers,
+                          force_overwrite=args.force)
         else:
             print(f"Warning: seg VSVI not found at {seg_vsvi}")
 
