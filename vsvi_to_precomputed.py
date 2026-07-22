@@ -148,36 +148,51 @@ def seg_mipN_tile_path(mip_dir, dir_name, section, row, col):
 # Tile range discovery
 # ============================================================
 
-def discover_tile_range(mip_dir, section_map, mip_level, pattern):
+def discover_tile_range(mip_dir, section_map, pattern):
     """
-    Scan tile files to determine max row/col for each section.
+    Determine the max row/col from the first valid section directory.
+    All sections share the same tile grid, so scanning one is enough.
     Returns: {section: (dir_name, max_row, max_col)}
     """
-    result = {}
+    # First, find max row/col from a single section (all sections have same tile grid)
+    global_max_r, global_max_c = 0, 0
+    sample_dir = None
     for section, dir_name in section_map.items():
         section_dir = os.path.join(mip_dir, dir_name)
         if not os.path.isdir(section_dir):
             continue
-
-        max_r, max_c = 0, 0
+        sample_dir = section_dir
+        # Scan this directory to find max row/col
         for f in os.listdir(section_dir):
             if not f.endswith('.png'):
                 continue
-            if pattern == 'em_mip0':
-                m = re.search(r'tr(\d+)-tc(\d+)', f)
-            elif pattern == 'seg_mip0':
+            if pattern == 'seg_mip0':
                 m = re.search(r'seg_r(\d+)_c(\d+)', f)
-            elif pattern in ('em_mipN', 'seg_mipN'):
-                m = re.search(r'tr(\d+)-tc(\d+)', f)
             else:
-                continue
+                m = re.search(r'tr(\d+)-tc(\d+)', f)
             if m:
                 r, c = int(m.group(1)), int(m.group(2))
-                max_r = max(max_r, r)
-                max_c = max(max_c, c)
+                global_max_r = max(global_max_r, r)
+                global_max_c = max(global_max_c, c)
+        break  # one section is enough
 
-        if max_c > 0 or max_r > 0:
-            result[section] = (dir_name, max_r, max_c)
+    print(f"    Sampling tiles from '{os.path.basename(sample_dir)}' → "
+          f"max_row={global_max_r}, max_col={global_max_c}")
+
+    if global_max_c == 0 and global_max_r == 0:
+        return {}
+
+    # Build section_info with the shared max_r/max_c
+    print(f"    Verifying {len(section_map)} section directories...")
+    result = {}
+    checked = 0
+    for section, dir_name in section_map.items():
+        section_dir = os.path.join(mip_dir, dir_name)
+        if os.path.isdir(section_dir):
+            result[section] = (dir_name, global_max_r, global_max_c)
+        checked += 1
+        if checked % 500 == 0:
+            print(f"      {checked}/{len(section_map)}...")
 
     return result
 
@@ -396,8 +411,8 @@ def convert_layer(layer_type, layer_dir_name, vsvi_meta, pattern_base,
         print(f"    Pattern: {pattern}")
         print(f"    Found {len(sec_map_raw)} section directories")
 
-        # Discover tile ranges
-        section_info = discover_tile_range(mip_dir, sec_map_raw, mip_level, pattern)
+        # Discover tile ranges (samples first section, all sections share same grid)
+        section_info = discover_tile_range(mip_dir, sec_map_raw, pattern)
         print(f"    Valid sections (with tiles): {len(section_info)}")
 
         if not section_info:
