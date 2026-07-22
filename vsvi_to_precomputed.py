@@ -40,8 +40,18 @@ CHUNK_SIZE = (128, 128, 128)
 # ============================================================
 
 def parse_vsvi(path):
+    """Parse VSVI metadata, handling Windows-style backslash paths."""
     with open(path) as f:
-        return json.load(f)
+        raw = f.read()
+    # VSVI files use backslashes in file paths (e.g., ".\mip0\%04d_*")
+    # which are not valid JSON escape sequences. Replace \ with / or \\.
+    # Strategy: find known invalid escape sequences and fix them.
+    # Common patterns in VSVI: \mip, \%04d, \s, etc.
+    # We replace single backslashes with forward slashes in string values.
+    import re as _re
+    # Replace backslash in paths: \mip → /mip, \% → /%, \s → /s
+    fixed = _re.sub(r'\\(?=[^"\\\/bfnrtu])', '/', raw)
+    return json.loads(fixed)
 
 
 # ============================================================
