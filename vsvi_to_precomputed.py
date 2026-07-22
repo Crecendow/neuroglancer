@@ -201,12 +201,30 @@ def discover_tile_range(mip_dir, section_map, pattern):
 # Chunk processing
 # ============================================================
 
-def process_chunk(args):
-    (mip_dir, section_info, section_list, cx, cy, cz,
-     chunk_sx, chunk_sy, chunk_sz,
-     tile_size, dims, pattern, out_dir, scale_key) = args
+# Global variables set before ProcessPoolExecutor (shared via fork on Linux)
+_PROCESS_SHARED = {}
 
-    dim_x, dim_y, dim_z = dims
+
+def process_chunk(args):
+    (cx, cy, cz) = args
+
+    shared = _PROCESS_SHARED
+    mip_dir = shared['mip_dir']
+    section_info = shared['section_info']
+    section_list = shared['section_list']
+    chunk_sx = shared['chunk_sx']
+    chunk_sy = shared['chunk_sy']
+    chunk_sz = shared['chunk_sz']
+    tile_size = shared['tile_size']
+    dim_x = shared['dim_x']
+    dim_y = shared['dim_y']
+    dim_z = shared['dim_z']
+    pattern = shared['pattern']
+    out_dir = shared['out_dir']
+    scale_key = shared['scale_key']
+    is_em = shared['is_em']
+    tile_base = shared['tile_base']
+
     ts = tile_size
 
     # Voxel range for this chunk
@@ -222,15 +240,6 @@ def process_chunk(args):
 
     if z0 >= len(section_list):
         return None
-
-    is_em = pattern.startswith('em')
-
-    # Tile indexing: EM datasets use 1-based row/col (tr1-tc1),
-    # seg datasets use 0-based (seg_r0_c0)
-    if is_em:
-        tile_base = 1
-    else:
-        tile_base = 0
 
     # Determine which tiles overlap this chunk in XY (in file-naming convention)
     tile_x0 = x0 // ts + tile_base
@@ -458,18 +467,28 @@ def convert_layer(layer_type, layer_dir_name, vsvi_meta, pattern_base,
             print(f"    No chunks to process, skipping")
             continue
 
-        # Build task list
+        # Build task list (just chunk coordinates — shared data via fork)
         tasks = []
         for cx in range(grid_x):
             for cy in range(grid_y):
                 for cz in range(grid_z):
-                    tasks.append((
-                        mip_dir, section_info, section_list,
-                        cx, cy, cz,
-                        csx, csy, csz, tile_size,
-                        (scale_x, scale_y, scale_z),
-                        pattern, out_path, str(mip_level)
-                    ))
+                    tasks.append((cx, cy, cz))
+
+        # Set up shared data (inherited by worker processes via fork on Linux)
+        _PROCESS_SHARED.clear()
+        _PROCESS_SHARED.update({
+            'mip_dir': mip_dir,
+            'section_info': section_info,
+            'section_list': section_list,
+            'chunk_sx': csx, 'chunk_sy': csy, 'chunk_sz': csz,
+            'tile_size': tile_size,
+            'dim_x': scale_x, 'dim_y': scale_y, 'dim_z': scale_z,
+            'pattern': pattern,
+            'out_dir': out_path,
+            'scale_key': str(mip_level),
+            'is_em': pattern.startswith('em'),
+            'tile_base': 1 if pattern.startswith('em') else 0,
+        })
 
         # Process in parallel
         completed = 0
