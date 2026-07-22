@@ -43,14 +43,9 @@ def parse_vsvi(path):
     """Parse VSVI metadata, handling Windows-style backslash paths."""
     with open(path) as f:
         raw = f.read()
-    # VSVI files use backslashes in file paths (e.g., ".\mip0\%04d_*")
-    # which are not valid JSON escape sequences. Replace \ with / or \\.
-    # Strategy: find known invalid escape sequences and fix them.
-    # Common patterns in VSVI: \mip, \%04d, \s, etc.
-    # We replace single backslashes with forward slashes in string values.
-    import re as _re
-    # Replace backslash in paths: \mip → /mip, \% → /%, \s → /s
-    fixed = _re.sub(r'\\(?=[^"\\\/bfnrtu])', '/', raw)
+    # VSVI files use Windows-style backslash paths like ".\mip0\%04d",
+    # which are not valid JSON. Replace ALL backslashes with forward slashes.
+    fixed = raw.replace('\\', '/')
     return json.loads(fixed)
 
 
