@@ -524,14 +524,16 @@ def convert_layer(layer_type, layer_dir_name, vsvi_meta, pattern_base,
                     rate = total / elapsed if elapsed > 0 else 0
                     eta = (num_chunks - total) / rate if rate > 0 else 0
                     print(f"      {total}/{num_chunks} "
-                          f"({done} new, {exists} existing, {skipped} skipped), "
-                          f"elapsed: {elapsed / 60:.1f}min, "
+                          f"({done} new, {exists} existing, {skipped} skipped) "
+                          f"| {rate:.1f} chunk/s | "
+                          f"elapsed: {elapsed / 60:.1f}min "
                           f"ETA: {eta / 60:.1f}min")
 
         elapsed = time.time() - t_start
-        rate = (done + exists + skipped) / elapsed if elapsed > 0 else 0
-        print(f"    Finished in {elapsed / 60:.1f} minutes "
-              f"(new: {done}, existing: {exists}, skipped: {skipped})")
+        total_done = done + exists + skipped
+        rate = total_done / elapsed if elapsed > 0 else 0
+        print(f"    Finished in {elapsed / 60:.1f} minutes ({rate:.1f} chunk/s) "
+              f"— new: {done}, existing: {exists}, skipped: {skipped}")
 
         # Add scale to info
         scales.append({
